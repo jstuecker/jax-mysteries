@@ -4,6 +4,7 @@ from graphviz import Source
 from IPython.display import SVG, display, Image, HTML
 import re
 import html
+import numpy as np
 
 def bytes_str(bytes):
     if abs(bytes) < 1024:
@@ -99,7 +100,7 @@ def show_hlo_info(f, *args, mode="mem_post", width=400, save=False, show_host_me
             display(resize_svg(svg, width=width))
     if "post" in mode:
         m = comp.memory_analysis()
-        mem_fac = m.temp_size_in_bytes / jnp.maximum(m.argument_size_in_bytes, 1)
+        mem_fac = m.temp_size_in_bytes / np.maximum(m.argument_size_in_bytes, 1)
         title_post = f"{title} (tmp: {bytes_str(m.temp_size_in_bytes)}, {mem_fac:.2g}x)"
 
         post_hlo = comp.as_text()
