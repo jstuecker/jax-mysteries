@@ -16,12 +16,15 @@ def bytes_str(bytes):
     else:
         return f"{bytes / 1024**3:.1f} GB"
 
-def print_memory_usage(fcompiled, show_host_mem=False):
+def print_memory_usage(flowered, fcompiled=None, show_host_mem=False):
+    if fcompiled is None:
+        fcompiled = flowered.compile()
     m = fcompiled.memory_analysis()
 
     # if m.generated_code_size_in_bytes > 1024*1024:
     #     print("Warning! We have constant folding!")
 
+    print(f"const : {bytes_str(folded_constants_bytes(flowered))}")
     print(f"code  : {bytes_str(m.generated_code_size_in_bytes )}")
     print(f"temp  : {bytes_str(m.temp_size_in_bytes)}")
     print(f"arg   : {bytes_str(m.argument_size_in_bytes)}")
@@ -89,8 +92,7 @@ def show_hlo_info(f, *args, mode="mem_post", width=400, save=False, show_host_me
 
     if "mem" in mode:
         print(f"--------  Memory usage of {title}  ---------")
-        print(f"const : {bytes_str(folded_constants_bytes(lo))}")
-        print_memory_usage(comp, show_host_mem=show_host_mem)
+        print_memory_usage(lo, show_host_mem=show_host_mem)
     if "pre" in mode:
         pre_hlo  = lo.as_text(dialect="hlo")
         svg = hlo_to_svg_text(pre_hlo, title=f"{title} (pre)")
