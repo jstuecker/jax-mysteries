@@ -114,15 +114,51 @@ def show_hlo_info(f, *args, mode="mem_post", width=400, save=False, show_host_me
 
 def token_to_jnp_dtype(tok: str):
     """Map MLIR/StableHLO tokens to JAX/NumPy dtypes."""
-    if tok == "bf16":
-        return jnp.bfloat16
-    if tok in {"f16", "f32", "f64"}:
-        return {"f16": jnp.float16, "f32": jnp.float32, "f64": jnp.float64}[tok]
-    if tok.startswith("ui"):  # e.g. ui8, ui16, ui32, ui64
-        return jnp.dtype(f"uint{tok[2:]}")
-    if tok.startswith("i"):   # e.g. i8, i16, i32, i64
-        return jnp.dtype(f"int{tok[1:]}")
-    raise ValueError(f"Unsupported dtype token: {tok}")
+    # booleans
+    if tok == "i1":
+        return jnp.bool_
+
+    # complex
+    if tok.startswith("complex<") and tok.endswith(">"):
+        inner = tok[len("complex<"):-1]
+        return {"f32": jnp.complex64, "f64": jnp.complex128}[inner]
+
+    # integers: si*/ui*/i*
+    m = re.fullmatch(r'(si|ui|i)(\d+)', tok)
+    if m:
+        kind, bits = m.groups()
+        bits = int(bits)
+        if kind == "ui":
+            return jnp.dtype(f"uint{bits}")
+        elif kind in ("si", "i"):
+            return jnp.dtype(f"int{bits}")
+
+    # fp8 & microscaling families
+    FP_MAP = {
+        "f8E3M4": jnp.float8_e3m4,
+        "f8E4M3": jnp.float8_e4m3,
+        "f8E4M3FN": jnp.float8_e4m3fn,
+        "f8E4M3FNUZ": jnp.float8_e4m3fnuz,
+        "f8E4M3B11FNUZ": jnp.float8_e4m3b11fnuz,
+        "f8E5M2": jnp.float8_e5m2,
+        "f8E5M2FNUZ": jnp.float8_e5m2fnuz,
+        "f8E8M0FNU": jnp.float8_e8m0fnu,
+        "f4E2M1FN": jnp.float4_e2m1fn,
+        # "f6E2M3FN": jnp.float6_e2m3fn,
+        # "f6E3M2FN": jnp.float6_e3m2fn,
+    }
+    if tok in FP_MAP:
+        return FP_MAP[tok]
+
+    # standard floats + bf16 + tf32
+    if tok in {"bf16", "f16", "f32", "f64"}:
+        return {"bf16": jnp.bfloat16, "f16": jnp.float16,
+                "f32": jnp.float32, "f64": jnp.float64}[tok]
+    if tok == "tf32":
+        return jnp.float32  # StableHLO 'tf32' ⇒ closest array dtype is float32
+    
+    print(f"Warning: unknown dtype token {tok}. I'll assume float32 instead")
+    return jnp.float32
 
 def shape_dtype_to_struct(spec: str) -> jax.ShapeDtypeStruct:
     """
@@ -131,17 +167,27 @@ def shape_dtype_to_struct(spec: str) -> jax.ShapeDtypeStruct:
       '131584x2xf32' -> shape=(131584, 2), dtype=float32
       'f32'          -> shape=(), dtype=float32 (scalar tensor)
     """
-    parts = spec.split('x')
-    if len(parts) == 1:
-        dims = ()
-        dtype_tok = parts[0]
-    else:
-        *dim_tokens, dtype_tok = parts
-        dims = tuple(int(d) for d in dim_tokens if d)
+    m2 = re.match(
+        r'^(?:(\d+(?:x\d+)*)x)?('
+        r'complex<[^<>]+>|'
+        r'i1|'
+        r'(?:si|ui)(?:2|4|8|16|32|64)|'      # si*/ui*
+        r'i(?:8|16|32|64)|'                  # legacy i*
+        r'bf16|f16|f32|f64|tf32|'
+        r'f(?:4E2M1FN|6E2M3FN|6E3M2FN|'
+        r'8E3M4|8E4M3(?:B11FNUZ|FNUZ|FN)?|'
+        r'8E5M2(?:FNUZ)?|8E8M0FNU)'
+        r')$',
+        spec
+    )
+    if not m2:
+        raise ValueError(f"Unparsable tensor spec: {spec}")
+    dims = tuple(map(int, m2.group(1).split('x'))) if m2.group(1) else ()
+    dtype_tok = m2.group(2)
     return jax.ShapeDtypeStruct(shape=dims, dtype=token_to_jnp_dtype(dtype_tok))
 
 PATTERN = re.compile(
-    r'(?m)^\s*%cst(?:_\d+)?\s*=\s*stablehlo\.constant\b[^\n]*?:\s*tensor<([^>]+)>'
+    r'(?m)^\s*%cst(?:_\d+)?\s*=\s*stablehlo\.constant\b[^\n]*?:\s*tensor<((?:[^<>]|<[^<>]*>)+)>'
 )
 def detect_folded_constants(low):
     """Return a list of ShapeDtypeStruct for all %cst tensor types of a lowered jax function
