@@ -19,8 +19,8 @@ def bytes_str(bytes):
 def print_memory_usage(fcompiled, show_host_mem=False):
     m = fcompiled.memory_analysis()
 
-    if m.generated_code_size_in_bytes > 1024*1024:
-        print("Warning! We have constant folding!")
+    # if m.generated_code_size_in_bytes > 1024*1024:
+    #     print("Warning! We have constant folding!")
 
     print(f"code  : {bytes_str(m.generated_code_size_in_bytes )}")
     print(f"temp  : {bytes_str(m.temp_size_in_bytes)}")
@@ -89,6 +89,7 @@ def show_hlo_info(f, *args, mode="mem_post", width=400, save=False, show_host_me
 
     if "mem" in mode:
         print(f"--------  Memory usage of {title}  ---------")
+        print(f"const : {bytes_str(folded_constants_bytes(lo))}")
         print_memory_usage(comp, show_host_mem=show_host_mem)
     if "pre" in mode:
         pre_hlo  = lo.as_text(dialect="hlo")
@@ -110,3 +111,51 @@ def show_hlo_info(f, *args, mode="mem_post", width=400, save=False, show_host_me
                 f.write(svg)
         else:
             display(resize_svg(svg, width=width))
+
+def token_to_jnp_dtype(tok: str):
+    """Map MLIR/StableHLO tokens to JAX/NumPy dtypes."""
+    if tok == "bf16":
+        return jnp.bfloat16
+    if tok in {"f16", "f32", "f64"}:
+        return {"f16": jnp.float16, "f32": jnp.float32, "f64": jnp.float64}[tok]
+    if tok.startswith("ui"):  # e.g. ui8, ui16, ui32, ui64
+        return jnp.dtype(f"uint{tok[2:]}")
+    if tok.startswith("i"):   # e.g. i8, i16, i32, i64
+        return jnp.dtype(f"int{tok[1:]}")
+    raise ValueError(f"Unsupported dtype token: {tok}")
+
+def shape_dtype_to_struct(spec: str) -> jax.ShapeDtypeStruct:
+    """
+    Convert a captured 'shapexdtype' spec from tensor<...> into ShapeDtypeStruct.
+    Examples:
+      '131584x2xf32' -> shape=(131584, 2), dtype=float32
+      'f32'          -> shape=(), dtype=float32 (scalar tensor)
+    """
+    parts = spec.split('x')
+    if len(parts) == 1:
+        dims = ()
+        dtype_tok = parts[0]
+    else:
+        *dim_tokens, dtype_tok = parts
+        dims = tuple(int(d) for d in dim_tokens if d)
+    return jax.ShapeDtypeStruct(shape=dims, dtype=token_to_jnp_dtype(dtype_tok))
+
+PATTERN = re.compile(
+    r'(?m)^\s*%cst(?:_\d+)?\s*=\s*stablehlo\.constant\b[^\n]*?:\s*tensor<([^>]+)>'
+)
+def detect_folded_constants(low):
+    """Return a list of ShapeDtypeStruct for all %cst tensor types of a lowered jax function
+    
+    example: detect_folded_constants(jax.jit(f).lower(x))
+    """
+    shlo = low.compiler_ir(dialect="stablehlo")
+    txt = shlo.operation.get_asm(large_elements_limit=16)
+    return [shape_dtype_to_struct(m.group(1)) for m in PATTERN.finditer(txt)]
+
+def folded_constants_bytes(low):
+    """Return the total size in bytes of all folded constants in a lowered jax function
+    
+    example: folded_constants_bytes(jax.jit(f).lower(x))
+    """
+    consts = detect_folded_constants(low)
+    return sum(c.size * c.dtype.itemsize for c in consts)
