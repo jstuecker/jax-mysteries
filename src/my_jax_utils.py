@@ -3,7 +3,6 @@ from jaxlib import xla_client as xc
 from graphviz import Source
 from IPython.display import SVG, display, Image, HTML
 import re
-import html
 import numpy as np
 
 def bytes_str(bytes):
@@ -52,8 +51,6 @@ def hlo_to_svg_text(hlo_text: str, title: str = None):
         svg_text = str(svg_bytes)
 
     if title:
-        esc = html.escape(title)
-
         title_fragment = (
             f"<title>{title}</title>"
             f"<g id=\"hlo_title\">"
